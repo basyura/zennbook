@@ -21,6 +21,10 @@ func main() {
 	id := os.Args[1]
 	title := os.Args[2]
 
+	if strings.HasPrefix(id, "http") {
+		id = strings.Replace(id, "https://zenn.dev/", "", 1)
+	}
+
 	if err := doMain(id, title); err != nil {
 		fmt.Println(err)
 	}
