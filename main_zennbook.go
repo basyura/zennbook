@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	. "zennbook/models"
 )
@@ -90,10 +91,15 @@ func writeChapter(no int, c Chapter) error {
 		return err
 	}
 
-	s := "# " + c.Name + "\n\n" + string(out)
+	lines := strings.Split("# "+strconv.Itoa(no)+". "+c.Name+"\n\n"+string(out), "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(line, "```diff-") {
+			lines[i] = "```diff"
+		}
+	}
 
 	path := filepath.Join(fmt.Sprintf("chapter%02d.md", no))
-	if err := os.WriteFile(path, []byte(s), os.ModePerm); err != nil {
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), os.ModePerm); err != nil {
 		return err
 	}
 
@@ -108,6 +114,13 @@ func pandoc(title string) error {
 		"-o", title + ".epub",
 		"--metadata", "title=" + title,
 	}
+
+	// "--css", "~/.kindle/KPR/style.css",
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return err
+	}
+	args = append(args, []string{"--css", filepath.Join(home, ".kindle/KPR/style.css")}...)
 
 	paths, err := getFilePaths(".")
 	if err != nil {
