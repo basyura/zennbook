@@ -21,17 +21,24 @@ func main() {
 
 	id := os.Args[1]
 	title := os.Args[2]
+	css := ""
+	if len(os.Args) > 4 {
+		css = os.Args[3]
+	}
 
 	if strings.HasPrefix(id, "http") {
 		id = strings.Replace(id, "https://zenn.dev/", "", 1)
 	}
 
-	if err := doMain(id, title); err != nil {
+	if err := doMain(id, title, css); err != nil {
 		fmt.Println(err)
 	}
 }
 
-func doMain(id string, title string) error {
+func doMain(id string, title string, css string) error {
+
+	os.Mkdir(title, os.ModePerm)
+
 	chapters, err := parseChapters(id)
 	if err != nil {
 		return err
@@ -39,7 +46,7 @@ func doMain(id string, title string) error {
 
 	for i, c := range chapters {
 		fmt.Print("fetch ...", c.Name, c.Url)
-		if err := writeChapter(i+1, c); err != nil {
+		if err := writeChapter(title, i+1, c); err != nil {
 			return err
 		}
 		fmt.Println("... end")
@@ -47,7 +54,7 @@ func doMain(id string, title string) error {
 
 	// manual
 	// $ pandoc -f markdown *.md -o hoge.epub --metadata title="ほげ"
-	if err := pandoc(title); err != nil {
+	if err := pandoc(title, css); err != nil {
 		return err
 	}
 
@@ -84,7 +91,7 @@ func parseChapters(id string) ([]Chapter, error) {
 	return chapters, nil
 }
 
-func writeChapter(no int, c Chapter) error {
+func writeChapter(title string, no int, c Chapter) error {
 
 	out, err := exec.Command("html2md", "-i", c.Url, "-s", "#viewer-toc").Output()
 	if err != nil {
@@ -98,7 +105,7 @@ func writeChapter(no int, c Chapter) error {
 		}
 	}
 
-	path := filepath.Join(fmt.Sprintf("chapter%02d.md", no))
+	path := filepath.Join(title, fmt.Sprintf("chapter%02d.md", no))
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), os.ModePerm); err != nil {
 		return err
 	}
@@ -106,23 +113,27 @@ func writeChapter(no int, c Chapter) error {
 	return nil
 }
 
-func pandoc(title string) error {
+func pandoc(title string, css string) error {
 
 	// $ pandoc -f markdown *.md -o hoge.epub --metadata title="ほげ"
 	args := []string{
 		"-f", "markdown",
-		"-o", title + ".epub",
+		"-o", filepath.Join(title, title+".epub"),
 		"--metadata", "title=" + title,
 	}
 
 	// "--css", "~/.kindle/KPR/style.css",
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	args = append(args, []string{"--css", filepath.Join(home, ".kindle/KPR/style.css")}...)
+	// home, err := os.UserHomeDir()
+	// if err != nil {
+	// 	return err
+	// }
+	// args = append(args, []string{"--css", filepath.Join(home, ".kindle/KPR/style.css")}...)
 
-	paths, err := getFilePaths(".")
+	if css != "" {
+		args = append(args, []string{"--css", css}...)
+	}
+
+	paths, err := getFilePaths(title)
 	if err != nil {
 		return err
 	}
