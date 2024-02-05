@@ -14,4 +14,15 @@ or
 $ brew install pandoc
 ```
 
+## Install
+
+```
+$ go install github.com/basyura/zennbook@latest
+```
+
+## Usage
+
+```sh
+$ zennbook hoge/books/012345 title
+```
 
