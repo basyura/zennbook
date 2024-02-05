@@ -9,7 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	. "zennbook/models"
+
+	. "github.com/basyura/zennbook/models"
 )
 
 func main() {
