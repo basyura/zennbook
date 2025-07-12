@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,38 +65,104 @@ func doMain(id string, title string, css string) error {
 }
 
 func parseChapters(id string) ([]Chapter, error) {
-
 	url := "https://zenn.dev/" + id
 	fmt.Println("fetch :", url)
 
-	out, err := exec.Command("html2md", "-i", url, "-s", "#chapters").Output()
+	// Extract buildId from main page
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
 
-	content := string(out)
-	content = strings.ReplaceAll(content, " [Chapter ", "\n[Chapter ")
-	content = strings.ReplaceAll(content, "**", "")
-	content = strings.ReplaceAll(content, "](", "\t")
-	content = strings.ReplaceAll(content, ")", "")
-	content = strings.ReplaceAll(content, " ", "")
+	// Extract buildId from script tag
+	htmlContent := string(body)
+	buildIdStart := strings.Index(htmlContent, `"buildId":"`)
+	if buildIdStart == -1 {
+		return nil, fmt.Errorf("buildId not found")
+	}
+	buildIdStart += len(`"buildId":"`)
+	buildIdEnd := strings.Index(htmlContent[buildIdStart:], `"`)
+	if buildIdEnd == -1 {
+		return nil, fmt.Errorf("buildId end not found")
+	}
+	buildId := htmlContent[buildIdStart : buildIdStart+buildIdEnd]
 
-	chapters := []Chapter{}
-	for _, s := range strings.Split(content, "\n") {
-		if strings.Contains(s, "http") {
-			pair := strings.Split(s, "\t")
-			c := Chapter{Name: pair[0], Url: pair[1]}
-			chapters = append(chapters, c)
-			fmt.Println(c.Name, c.Url)
-		}
+	// Fetch chapter data from Next.js API
+	apiUrl := fmt.Sprintf("https://zenn.dev/_next/data/%s/%s.json", buildId, id)
+	fmt.Println("API fetch:", apiUrl)
+
+	apiResp, err := http.Get(apiUrl)
+	if err != nil {
+		return nil, err
+	}
+	defer apiResp.Body.Close()
+
+	apiBody, err := ioutil.ReadAll(apiResp.Body)
+	if err != nil {
+		return nil, err
 	}
 
-	return chapters, nil
+	var apiData struct {
+		PageProps struct {
+			Chapters []Chapter `json:"chapters"`
+		} `json:"pageProps"`
+	}
+
+	if err := json.Unmarshal(apiBody, &apiData); err != nil {
+		return nil, err
+	}
+
+	// Set URLs for chapters
+	for i := range apiData.PageProps.Chapters {
+		chapter := &apiData.PageProps.Chapters[i]
+		chapter.Url = "https://zenn.dev" + chapter.Url
+		fmt.Println(chapter.Name, chapter.Url)
+	}
+
+	return apiData.PageProps.Chapters, nil
 }
 
 func writeChapter(title string, no int, c Chapter) error {
+	// Fetch chapter content from API
+	apiUrl := fmt.Sprintf("https://zenn.dev/api/chapters/%d", c.ID)
+	fmt.Printf("Fetching chapter content from: %s\n", apiUrl)
 
-	out, err := exec.Command("html2md", "-i", c.Url, "-s", "#viewer-toc").Output()
+	resp, err := http.Get(apiUrl)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	body, err := ioutil.ReadAll(resp.Body)
+	if err != nil {
+		return err
+	}
+
+	var chapterData struct {
+		Chapter struct {
+			BodyHTML string `json:"body_html"`
+		} `json:"chapter"`
+	}
+
+	if err := json.Unmarshal(body, &chapterData); err != nil {
+		return err
+	}
+
+	// Create temporary HTML file
+	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_chapter_%d.html", c.ID))
+	if err := os.WriteFile(tempFile, []byte(chapterData.Chapter.BodyHTML), 0644); err != nil {
+		return err
+	}
+	defer os.Remove(tempFile)
+
+	// Convert HTML to Markdown using html2md
+	out, err := exec.Command("html2md", "-i", tempFile).Output()
 	if err != nil {
 		return err
 	}
