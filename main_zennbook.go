@@ -205,10 +205,10 @@ func processContent(content string) []string {
 	lines = fixCodeBlocks(lines)
 
 	// Balance code block tags
-	lines = balanceCodeBlockTags(lines)
+	//lines = balanceCodeBlockTags(lines)
 
 	// Format code blocks
-	lines = formatCodeBlocks(lines)
+	//lines = formatCodeBlocks(lines)
 
 	return lines
 }
@@ -249,7 +249,7 @@ func processCodeLineSuffix(lines []string, i int) []string {
 
 	// Collect all command lines until we find an empty line or end of lines
 	for j < len(lines) && strings.TrimSpace(lines[j]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
-		commandLines = append(commandLines, strings.TrimSpace(lines[j]))
+		commandLines = append(commandLines, strings.TrimSuffix(lines[j], " "))
 		j++
 	}
 
