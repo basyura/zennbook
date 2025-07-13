@@ -560,30 +560,3 @@ func getFilePaths(baseDir string) ([]string, error) {
 
 	return paths, nil
 }
-
-func GetListTool() ToolDefinition {
-	return ToolDefinition{
-		Schema: openai.Tool{
-			Type: openai.ToolTypeFunction,
-			Function: &openai.FunctionDefinition{
-				Name:        "list",
-				Description: "指定したディレクトリ内のファイルとディレクトリの一覧を返します。recursiveがtrueの場合、再帰的にリストします。",
-				Parameters: jsonschema.Definition{
-					Type: jsonschema.Object,
-					Properties: map[string]jsonschema.Definition{
-						"path": {
-							Type:        jsonschema.String,
-							Description: "リストするディレクトリのパス",
-						},
-						"recursive": {
-							Type:        jsonschema.Boolean,
-							Description: "再帰的にリストするかどうか（デフォルト: false）",
-						},
-					},
-					Required: []string{"path"},
-				},
-			},
-		},
-		Function: List,
-	}
-}
