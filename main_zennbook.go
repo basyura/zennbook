@@ -167,12 +167,116 @@ func writeChapter(title string, no int, c Chapter) error {
 		return err
 	}
 
-	lines := strings.Split("# "+strconv.Itoa(no)+". "+c.Name+"\n\n"+string(out), "\n")
-	for i, line := range lines {
+	content := "# " + strconv.Itoa(no) + ". " + c.Name + "\n\n" + string(out)
+	
+	// Handle HTML code blocks with proper line breaks
+	content = strings.ReplaceAll(content, "<span class=\"token builtin class-name\">", "")
+	content = strings.ReplaceAll(content, "<span class=\"token function\">", "")
+	content = strings.ReplaceAll(content, "</span>", "")
+	
+	lines := strings.Split(content, "\n")
+	
+	// Process lines and fix code blocks
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		
 		if strings.HasPrefix(line, "```diff-") {
 			lines[i] = "```diff"
 		}
+		
+		// Fix code blocks ending with " code-line"
+		if strings.Contains(line, "```") && strings.HasSuffix(line, " code-line") {
+			// Remove " code-line" from the end
+			lines[i] = strings.TrimSuffix(line, " code-line")
+			
+			// Check if there are commands on subsequent lines
+			commandLines := []string{}
+			j := i + 1
+			
+			// Collect all command lines until we find an empty line or end of lines
+			for j < len(lines) && strings.TrimSpace(lines[j]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
+				commandLines = append(commandLines, strings.TrimSpace(lines[j]))
+				j++
+			}
+			
+			if len(commandLines) > 0 {
+				// Check if it's a single line with multiple commands
+				allCommands := strings.Join(commandLines, " ")
+				var finalCommands []string
+				
+				// Handle specific patterns for shell commands
+				if strings.Contains(allCommands, "mkdir") || strings.Contains(allCommands, "cd") || strings.Contains(allCommands, "go ") {
+					// Split by common command keywords
+					parts := strings.Fields(allCommands)
+					currentCmd := ""
+					for _, part := range parts {
+						if part == "mkdir" || part == "cd" || part == "go" || part == "npm" || part == "git" || part == "echo" || part == "export" {
+							if currentCmd != "" {
+								finalCommands = append(finalCommands, currentCmd)
+							}
+							currentCmd = part
+						} else {
+							if currentCmd != "" {
+								currentCmd += " " + part
+							} else {
+								currentCmd = part
+							}
+						}
+					}
+					if currentCmd != "" {
+						finalCommands = append(finalCommands, currentCmd)
+					}
+				} else {
+					// Keep original command lines
+					finalCommands = commandLines
+				}
+				
+				// Replace the original command lines with split commands
+				// First, remove original command lines
+				lines = append(lines[:i+1], lines[j:]...)
+				
+				// Insert the split commands
+				for k, cmd := range finalCommands {
+					lines = append(lines[:i+1+k], append([]string{cmd}, lines[i+1+k:]...)...)
+				}
+				
+			}
+		}
 	}
+	
+	// Final pass: Remove excess closing ``` by counting opens and closes
+	var result []string
+	openCount := 0
+	closeCount := 0
+	
+	// First pass: count opens and closes
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") && len(trimmed) > 3 {
+			openCount++
+		} else if trimmed == "```" {
+			closeCount++
+		}
+	}
+	
+	// Second pass: include appropriate number of closes
+	actualCloses := 0
+	maxCloses := openCount
+	
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "```" {
+			if actualCloses < maxCloses {
+				result = append(result, line)
+				actualCloses++
+			}
+			// Skip excess closes
+		} else {
+			result = append(result, line)
+		}
+	}
+	
+	lines = result
 
 	path := filepath.Join(title, fmt.Sprintf("chapter%02d.md", no))
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), os.ModePerm); err != nil {
