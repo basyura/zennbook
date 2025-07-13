@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -77,7 +77,7 @@ func parseChapters(id string) ([]Chapter, error) {
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ func parseChapters(id string) ([]Chapter, error) {
 	}
 	defer apiResp.Body.Close()
 
-	apiBody, err := ioutil.ReadAll(apiResp.Body)
+	apiBody, err := io.ReadAll(apiResp.Body)
 	if err != nil {
 		return nil, err
 	}
@@ -131,19 +131,39 @@ func parseChapters(id string) ([]Chapter, error) {
 }
 
 func writeChapter(title string, no int, c Chapter) error {
+	// Fetch and convert chapter content
+	content, err := fetchAndConvertChapter(c, no)
+	if err != nil {
+		return err
+	}
+
+	// Process and format the content
+	processedContent := processContent(content)
+
+	// Write to file
+	path := filepath.Join(title, fmt.Sprintf("chapter%02d.md", no))
+	if err := os.WriteFile(path, []byte(strings.Join(processedContent, "\n")), os.ModePerm); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// fetchAndConvertChapter fetches chapter content from API and converts HTML to Markdown
+func fetchAndConvertChapter(c Chapter, no int) (string, error) {
 	// Fetch chapter content from API
 	apiUrl := fmt.Sprintf("https://zenn.dev/api/chapters/%d", c.ID)
 	fmt.Printf("Fetching chapter content from: %s\n", apiUrl)
 
 	resp, err := http.Get(apiUrl)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer resp.Body.Close()
 
-	body, err := ioutil.ReadAll(resp.Body)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	var chapterData struct {
@@ -153,32 +173,56 @@ func writeChapter(title string, no int, c Chapter) error {
 	}
 
 	if err := json.Unmarshal(body, &chapterData); err != nil {
-		return err
+		return "", err
 	}
 
 	// Create temporary HTML file
 	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_chapter_%d.html", c.ID))
 	if err := os.WriteFile(tempFile, []byte(chapterData.Chapter.BodyHTML), 0644); err != nil {
-		return err
+		return "", err
 	}
 	defer os.Remove(tempFile)
 
 	// Convert HTML to Markdown using html2md
 	out, err := exec.Command("html2md", "-i", tempFile).Output()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	content := "# " + strconv.Itoa(no) + ". " + c.Name + "\n\n" + string(out)
+	return content, nil
+}
 
-	// Handle HTML code blocks with proper line breaks and indentation
+// processContent applies all content processing steps
+func processContent(content string) []string {
+	// Clean HTML tokens
+	content = cleanHTMLTokens(content)
+
+	// Split into lines for processing
+	lines := strings.Split(content, "\n")
+
+	// Fix code blocks
+	lines = fixCodeBlocks(lines)
+
+	// Balance code block tags
+	lines = balanceCodeBlockTags(lines)
+
+	// Format code blocks
+	lines = formatCodeBlocks(lines)
+
+	return lines
+}
+
+// cleanHTMLTokens removes unwanted HTML tokens from content
+func cleanHTMLTokens(content string) string {
 	content = strings.ReplaceAll(content, "<span class=\"token builtin class-name\">", "")
 	content = strings.ReplaceAll(content, "<span class=\"token function\">", "")
 	content = strings.ReplaceAll(content, "</span>", "")
+	return content
+}
 
-	lines := strings.Split(content, "\n")
-
-	// Process lines and fix code blocks
+// fixCodeBlocks processes code block formatting issues
+func fixCodeBlocks(lines []string) []string {
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 
@@ -188,65 +232,81 @@ func writeChapter(title string, no int, c Chapter) error {
 
 		// Fix code blocks ending with " code-line"
 		if strings.Contains(line, "```") && strings.HasSuffix(line, " code-line") {
-			// Remove " code-line" from the end
-			lines[i] = strings.TrimSuffix(line, " code-line")
+			lines = processCodeLineSuffix(lines, i)
+		}
+	}
+	return lines
+}
 
-			// Check if there are commands on subsequent lines
-			commandLines := []string{}
-			j := i + 1
+// processCodeLineSuffix handles code blocks with " code-line" suffix
+func processCodeLineSuffix(lines []string, i int) []string {
+	// Remove " code-line" from the end
+	lines[i] = strings.TrimSuffix(lines[i], " code-line")
 
-			// Collect all command lines until we find an empty line or end of lines
-			for j < len(lines) && strings.TrimSpace(lines[j]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
-				commandLines = append(commandLines, strings.TrimSpace(lines[j]))
-				j++
-			}
+	// Check if there are commands on subsequent lines
+	commandLines := []string{}
+	j := i + 1
 
-			if len(commandLines) > 0 {
-				// Check if it's a single line with multiple commands
-				allCommands := strings.Join(commandLines, " ")
-				var finalCommands []string
+	// Collect all command lines until we find an empty line or end of lines
+	for j < len(lines) && strings.TrimSpace(lines[j]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
+		commandLines = append(commandLines, strings.TrimSpace(lines[j]))
+		j++
+	}
 
-				// Handle specific patterns for shell commands
-				if strings.Contains(allCommands, "mkdir") || strings.Contains(allCommands, "cd") || strings.Contains(allCommands, "go ") {
-					// Split by common command keywords
-					parts := strings.Fields(allCommands)
-					currentCmd := ""
-					for _, part := range parts {
-						if part == "mkdir" || part == "cd" || part == "go" || part == "npm" || part == "git" || part == "echo" || part == "export" {
-							if currentCmd != "" {
-								finalCommands = append(finalCommands, currentCmd)
-							}
-							currentCmd = part
-						} else {
-							if currentCmd != "" {
-								currentCmd += " " + part
-							} else {
-								currentCmd = part
-							}
-						}
-					}
-					if currentCmd != "" {
-						finalCommands = append(finalCommands, currentCmd)
-					}
-				} else {
-					// Keep original command lines
-					finalCommands = commandLines
-				}
+	if len(commandLines) > 0 {
+		// Process and split commands if needed
+		finalCommands := splitShellCommands(commandLines)
 
-				// Replace the original command lines with split commands
-				// First, remove original command lines
-				lines = append(lines[:i+1], lines[j:]...)
+		// Replace the original command lines with split commands
+		// First, remove original command lines
+		lines = append(lines[:i+1], lines[j:]...)
 
-				// Insert the split commands
-				for k, cmd := range finalCommands {
-					lines = append(lines[:i+1+k], append([]string{cmd}, lines[i+1+k:]...)...)
-				}
-
-			}
+		// Insert the split commands
+		for k, cmd := range finalCommands {
+			lines = append(lines[:i+1+k], append([]string{cmd}, lines[i+1+k:]...)...)
 		}
 	}
 
-	// Final pass: Remove excess closing ``` by counting opens and closes
+	return lines
+}
+
+// splitShellCommands splits concatenated shell commands into separate lines
+func splitShellCommands(commandLines []string) []string {
+	allCommands := strings.Join(commandLines, " ")
+	var finalCommands []string
+
+	// Handle specific patterns for shell commands
+	if strings.Contains(allCommands, "mkdir") || strings.Contains(allCommands, "cd") || strings.Contains(allCommands, "go ") {
+		// Split by common command keywords
+		parts := strings.Fields(allCommands)
+		currentCmd := ""
+		for _, part := range parts {
+			if part == "mkdir" || part == "cd" || part == "go" || part == "npm" || part == "git" || part == "echo" || part == "export" {
+				if currentCmd != "" {
+					finalCommands = append(finalCommands, currentCmd)
+				}
+				currentCmd = part
+			} else {
+				if currentCmd != "" {
+					currentCmd += " " + part
+				} else {
+					currentCmd = part
+				}
+			}
+		}
+		if currentCmd != "" {
+			finalCommands = append(finalCommands, currentCmd)
+		}
+	} else {
+		// Keep original command lines
+		finalCommands = commandLines
+	}
+
+	return finalCommands
+}
+
+// balanceCodeBlockTags ensures proper balance between opening and closing code block tags
+func balanceCodeBlockTags(lines []string) []string {
 	var result []string
 	openCount := 0
 	closeCount := 0
@@ -278,9 +338,11 @@ func writeChapter(title string, no int, c Chapter) error {
 		}
 	}
 
-	lines = result
+	return result
+}
 
-	// Final pass: Format code blocks using prettier
+// formatCodeBlocks applies language-specific formatting to code blocks
+func formatCodeBlocks(lines []string) []string {
 	inCodeBlock := false
 	codeBlockStart := -1
 	codeBlockLang := ""
@@ -320,12 +382,7 @@ func writeChapter(title string, no int, c Chapter) error {
 		}
 	}
 
-	path := filepath.Join(title, fmt.Sprintf("chapter%02d.md", no))
-	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), os.ModePerm); err != nil {
-		return err
-	}
-
-	return nil
+	return lines
 }
 
 // formatCodeBlock formats code using appropriate formatter based on language
@@ -386,6 +443,7 @@ func formatCodeBlock(codeLines []string, language string) []string {
 func formatWithPrettier(code, parser string) []string {
 	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.tmp", len(code)))
 	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		fmt.Printf("Prettier formatting error: failed to create temp file: %v\n", err)
 		return nil
 	}
 	defer os.Remove(tempFile)
@@ -393,6 +451,11 @@ func formatWithPrettier(code, parser string) []string {
 	cmd := exec.Command("prettier", "--parser", parser, tempFile)
 	output, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Prettier formatting error (parser: %s): %v\nStderr: %s\n", parser, err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Prettier formatting error (parser: %s): %v\n", parser, err)
+		}
 		return nil
 	}
 
@@ -405,6 +468,11 @@ func formatWithGofmt(code string) []string {
 	cmd.Stdin = strings.NewReader(code)
 	output, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("gofmt formatting error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("gofmt formatting error: %v\n", err)
+		}
 		return nil
 	}
 
@@ -415,6 +483,7 @@ func formatWithGofmt(code string) []string {
 func formatWithRubocop(code string) []string {
 	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.rb", len(code)))
 	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		fmt.Printf("Rubocop formatting error: failed to create temp file: %v\n", err)
 		return nil
 	}
 	defer os.Remove(tempFile)
@@ -422,12 +491,18 @@ func formatWithRubocop(code string) []string {
 	cmd := exec.Command("rubocop", "--auto-correct", "--stdin", tempFile)
 	_, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Rubocop formatting error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Rubocop formatting error: %v\n", err)
+		}
 		return nil
 	}
 
 	// Read the corrected file
 	corrected, err := os.ReadFile(tempFile)
 	if err != nil {
+		fmt.Printf("Rubocop formatting error: failed to read corrected file: %v\n", err)
 		return nil
 	}
 
@@ -438,17 +513,24 @@ func formatWithRubocop(code string) []string {
 func formatWithDotnetFormat(code string) []string {
 	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.cs", len(code)))
 	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		fmt.Printf("Dotnet format error: failed to create temp file: %v\n", err)
 		return nil
 	}
 	defer os.Remove(tempFile)
 
 	cmd := exec.Command("dotnet", "format", "--include", tempFile)
 	if err := cmd.Run(); err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Dotnet format error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Dotnet format error: %v\n", err)
+		}
 		return nil
 	}
 
 	formatted, err := os.ReadFile(tempFile)
 	if err != nil {
+		fmt.Printf("Dotnet format error: failed to read formatted file: %v\n", err)
 		return nil
 	}
 
@@ -460,6 +542,11 @@ func formatWithBlack(code string) []string {
 	cmd := exec.Command("black", "--code", code)
 	output, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Black formatting error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Black formatting error: %v\n", err)
+		}
 		return nil
 	}
 
@@ -472,6 +559,11 @@ func formatWithRustfmt(code string) []string {
 	cmd.Stdin = strings.NewReader(code)
 	output, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Rustfmt formatting error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Rustfmt formatting error: %v\n", err)
+		}
 		return nil
 	}
 
@@ -484,6 +576,11 @@ func formatWithGoogleJavaFormat(code string) []string {
 	cmd.Stdin = strings.NewReader(code)
 	output, err := cmd.Output()
 	if err != nil {
+		if exitError, ok := err.(*exec.ExitError); ok {
+			fmt.Printf("Google Java Format error: %v\nStderr: %s\n", err, string(exitError.Stderr))
+		} else {
+			fmt.Printf("Google Java Format error: %v\n", err)
+		}
 		return nil
 	}
 
@@ -530,16 +627,12 @@ func pandoc(title string, css string) error {
 		fmt.Println(fmt.Sprint(err) + ": " + stderr.String())
 		return err
 	}
-	// fmt.Println("Result: " + out.String())
-	if err != nil {
-		return err
-	}
 
 	return err
 }
 
 func getFilePaths(baseDir string) ([]string, error) {
-	files, err := ioutil.ReadDir(baseDir)
+	files, err := os.ReadDir(baseDir)
 
 	if err != nil {
 		fmt.Println("read error :", baseDir)
