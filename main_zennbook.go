@@ -48,9 +48,11 @@ func doMain(id string, title string, css string) error {
 	}
 
 	for i, c := range chapters {
-		fmt.Print("fetch ...", c.Name, c.Url)
+		fmt.Printf("fetch ... %s (ID: %d) %s\n", c.Name, c.ID, c.Url)
 		if err := writeChapter(title, i+1, c); err != nil {
-			return err
+			fmt.Printf("Error processing chapter %d: %v\n", i+1, err)
+			// Continue with next chapter instead of stopping
+			continue
 		}
 		fmt.Println("... end")
 	}
@@ -168,42 +170,42 @@ func writeChapter(title string, no int, c Chapter) error {
 	}
 
 	content := "# " + strconv.Itoa(no) + ". " + c.Name + "\n\n" + string(out)
-	
-	// Handle HTML code blocks with proper line breaks
+
+	// Handle HTML code blocks with proper line breaks and indentation
 	content = strings.ReplaceAll(content, "<span class=\"token builtin class-name\">", "")
 	content = strings.ReplaceAll(content, "<span class=\"token function\">", "")
 	content = strings.ReplaceAll(content, "</span>", "")
-	
+
 	lines := strings.Split(content, "\n")
-	
+
 	// Process lines and fix code blocks
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
-		
+
 		if strings.HasPrefix(line, "```diff-") {
 			lines[i] = "```diff"
 		}
-		
+
 		// Fix code blocks ending with " code-line"
 		if strings.Contains(line, "```") && strings.HasSuffix(line, " code-line") {
 			// Remove " code-line" from the end
 			lines[i] = strings.TrimSuffix(line, " code-line")
-			
+
 			// Check if there are commands on subsequent lines
 			commandLines := []string{}
 			j := i + 1
-			
+
 			// Collect all command lines until we find an empty line or end of lines
 			for j < len(lines) && strings.TrimSpace(lines[j]) != "" && !strings.HasPrefix(strings.TrimSpace(lines[j]), "```") {
 				commandLines = append(commandLines, strings.TrimSpace(lines[j]))
 				j++
 			}
-			
+
 			if len(commandLines) > 0 {
 				// Check if it's a single line with multiple commands
 				allCommands := strings.Join(commandLines, " ")
 				var finalCommands []string
-				
+
 				// Handle specific patterns for shell commands
 				if strings.Contains(allCommands, "mkdir") || strings.Contains(allCommands, "cd") || strings.Contains(allCommands, "go ") {
 					// Split by common command keywords
@@ -230,25 +232,25 @@ func writeChapter(title string, no int, c Chapter) error {
 					// Keep original command lines
 					finalCommands = commandLines
 				}
-				
+
 				// Replace the original command lines with split commands
 				// First, remove original command lines
 				lines = append(lines[:i+1], lines[j:]...)
-				
+
 				// Insert the split commands
 				for k, cmd := range finalCommands {
 					lines = append(lines[:i+1+k], append([]string{cmd}, lines[i+1+k:]...)...)
 				}
-				
+
 			}
 		}
 	}
-	
+
 	// Final pass: Remove excess closing ``` by counting opens and closes
 	var result []string
 	openCount := 0
 	closeCount := 0
-	
+
 	// First pass: count opens and closes
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -258,11 +260,11 @@ func writeChapter(title string, no int, c Chapter) error {
 			closeCount++
 		}
 	}
-	
+
 	// Second pass: include appropriate number of closes
 	actualCloses := 0
 	maxCloses := openCount
-	
+
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "```" {
@@ -275,8 +277,48 @@ func writeChapter(title string, no int, c Chapter) error {
 			result = append(result, line)
 		}
 	}
-	
+
 	lines = result
+
+	// Final pass: Format code blocks using prettier
+	inCodeBlock := false
+	codeBlockStart := -1
+	codeBlockLang := ""
+
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
+		trimmed := strings.TrimSpace(line)
+
+		if strings.HasPrefix(trimmed, "```") {
+			if !inCodeBlock {
+				// Starting a code block
+				inCodeBlock = true
+				codeBlockStart = i
+				if len(trimmed) > 3 {
+					codeBlockLang = trimmed[3:]
+				} else {
+					codeBlockLang = ""
+				}
+			} else {
+				// Ending a code block - format if language is specified
+				inCodeBlock = false
+				if codeBlockLang != "" && codeBlockStart >= 0 {
+					formatted := formatCodeBlock(lines[codeBlockStart+1:i], codeBlockLang)
+					if formatted != nil {
+						// Replace the code block content with formatted version
+						newLines := make([]string, 0, len(lines))
+						newLines = append(newLines, lines[:codeBlockStart+1]...)
+						newLines = append(newLines, formatted...)
+						newLines = append(newLines, lines[i:]...)
+						lines = newLines
+						i = codeBlockStart + len(formatted)
+					}
+				}
+				codeBlockStart = -1
+				codeBlockLang = ""
+			}
+		}
+	}
 
 	path := filepath.Join(title, fmt.Sprintf("chapter%02d.md", no))
 	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")), os.ModePerm); err != nil {
@@ -284,6 +326,168 @@ func writeChapter(title string, no int, c Chapter) error {
 	}
 
 	return nil
+}
+
+// formatCodeBlock formats code using appropriate formatter based on language
+func formatCodeBlock(codeLines []string, language string) []string {
+	lang := strings.ToLower(language)
+
+	// Join code lines
+	code := strings.Join(codeLines, "\n")
+	if strings.TrimSpace(code) == "" {
+		return codeLines
+	}
+
+	// Try prettier for supported languages
+	prettierLangs := map[string]string{
+		"javascript": "babel",
+		"js":         "babel",
+		"typescript": "typescript",
+		"ts":         "typescript",
+		"jsx":        "babel",
+		"tsx":        "typescript",
+		"json":       "json",
+		"css":        "css",
+		"scss":       "scss",
+		"less":       "less",
+		"html":       "html",
+		"markdown":   "markdown",
+		"md":         "markdown",
+		"yaml":       "yaml",
+		"yml":        "yaml",
+		"graphql":    "graphql",
+	}
+
+	if parser, supported := prettierLangs[lang]; supported {
+		return formatWithPrettier(code, parser)
+	}
+
+	// Try other formatters for languages not supported by prettier
+	switch lang {
+	case "go":
+		return formatWithGofmt(code)
+	case "ruby", "rb":
+		return formatWithRubocop(code)
+	case "c#", "cs", "csharp":
+		return formatWithDotnetFormat(code)
+	case "python", "py":
+		return formatWithBlack(code)
+	case "rust", "rs":
+		return formatWithRustfmt(code)
+	case "java":
+		return formatWithGoogleJavaFormat(code)
+	default:
+		// Language not supported, return original
+		return nil
+	}
+}
+
+// formatWithPrettier formats code using prettier
+func formatWithPrettier(code, parser string) []string {
+	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.tmp", len(code)))
+	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		return nil
+	}
+	defer os.Remove(tempFile)
+
+	cmd := exec.Command("prettier", "--parser", parser, tempFile)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+}
+
+// formatWithGofmt formats Go code using gofmt
+func formatWithGofmt(code string) []string {
+	cmd := exec.Command("gofmt")
+	cmd.Stdin = strings.NewReader(code)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+}
+
+// formatWithRubocop formats Ruby code using rubocop
+func formatWithRubocop(code string) []string {
+	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.rb", len(code)))
+	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		return nil
+	}
+	defer os.Remove(tempFile)
+
+	cmd := exec.Command("rubocop", "--auto-correct", "--stdin", tempFile)
+	_, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	// Read the corrected file
+	corrected, err := os.ReadFile(tempFile)
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(corrected), "\n"), "\n")
+}
+
+// formatWithDotnetFormat formats C# code using dotnet format
+func formatWithDotnetFormat(code string) []string {
+	tempFile := filepath.Join(os.TempDir(), fmt.Sprintf("temp_code_%d.cs", len(code)))
+	if err := os.WriteFile(tempFile, []byte(code), 0644); err != nil {
+		return nil
+	}
+	defer os.Remove(tempFile)
+
+	cmd := exec.Command("dotnet", "format", "--include", tempFile)
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+
+	formatted, err := os.ReadFile(tempFile)
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(formatted), "\n"), "\n")
+}
+
+// formatWithBlack formats Python code using black
+func formatWithBlack(code string) []string {
+	cmd := exec.Command("black", "--code", code)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+}
+
+// formatWithRustfmt formats Rust code using rustfmt
+func formatWithRustfmt(code string) []string {
+	cmd := exec.Command("rustfmt", "--emit", "stdout")
+	cmd.Stdin = strings.NewReader(code)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
+}
+
+// formatWithGoogleJavaFormat formats Java code using google-java-format
+func formatWithGoogleJavaFormat(code string) []string {
+	cmd := exec.Command("google-java-format", "-")
+	cmd.Stdin = strings.NewReader(code)
+	output, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+
+	return strings.Split(strings.TrimSuffix(string(output), "\n"), "\n")
 }
 
 func pandoc(title string, css string) error {
@@ -355,4 +559,31 @@ func getFilePaths(baseDir string) ([]string, error) {
 	}
 
 	return paths, nil
+}
+
+func GetListTool() ToolDefinition {
+	return ToolDefinition{
+		Schema: openai.Tool{
+			Type: openai.ToolTypeFunction,
+			Function: &openai.FunctionDefinition{
+				Name:        "list",
+				Description: "指定したディレクトリ内のファイルとディレクトリの一覧を返します。recursiveがtrueの場合、再帰的にリストします。",
+				Parameters: jsonschema.Definition{
+					Type: jsonschema.Object,
+					Properties: map[string]jsonschema.Definition{
+						"path": {
+							Type:        jsonschema.String,
+							Description: "リストするディレクトリのパス",
+						},
+						"recursive": {
+							Type:        jsonschema.Boolean,
+							Description: "再帰的にリストするかどうか（デフォルト: false）",
+						},
+					},
+					Required: []string{"path"},
+				},
+			},
+		},
+		Function: List,
+	}
 }
